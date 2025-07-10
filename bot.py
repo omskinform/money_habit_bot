@@ -138,7 +138,7 @@ async def send_progress_report(context: ContextTypes.DEFAULT_TYPE):
                 text=f"Итоги за {day} дней:\n{bar} {done}/{total}"
             )
 
-if name == "main":
+if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("next", next_task))
