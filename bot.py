@@ -14,7 +14,7 @@ from apscheduler.triggers.cron import CronTrigger
 # -------------------------------------------------------------------
 # Конфиг
 # -------------------------------------------------------------------
-TOKEN = os.getenv("BOT_TOKEN")  # берётся из GitHub Secrets
+TOKEN = os.getenv("TOKEN")  # берётся из GitHub Secrets
 
 TASKS_FILE = "tasks.json"
 USERS_FILE = "users.json"
