@@ -23,7 +23,7 @@ USERS_FILE = "users.json"
 # Логирование
 # -------------------------------------------------------------------
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(name)
+logger = logging.getLogger(__name__)
 
 # -------------------------------------------------------------------
 # Утилиты для работы с JSON
@@ -175,7 +175,7 @@ async def send_progress_report():
 # -------------------------------------------------------------------
 # Основная точка входа
 # -------------------------------------------------------------------
-if name == "main":
+if __name__ == "__main__":
     # создаём приложение
     app = ApplicationBuilder().token(TOKEN).build()
 
