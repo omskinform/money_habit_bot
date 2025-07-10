@@ -12,7 +12,7 @@ TASKS_FILE = "tasks.json"
 USERS_FILE = "users.json"
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(name)
+logger = logging.getLogger(__name__)
 
 def load_json(path):
     try:
