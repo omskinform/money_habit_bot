@@ -1,198 +1,144 @@
+import logging
 import os
 import json
-import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+import datetime
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes
+    ContextTypes,
+    MessageHandler,
+    filters,
 )
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-# -------------------------------------------------------------------
-# Конфиг
-# -------------------------------------------------------------------
-TOKEN = os.getenv("TOKEN")  # берётся из GitHub Secrets
-
-TASKS_FILE = "tasks.json"
-USERS_FILE = "users.json"
-
-# -------------------------------------------------------------------
-# Логирование
-# -------------------------------------------------------------------
+# Логгер
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(name)
 
-# -------------------------------------------------------------------
-# Утилиты для работы с JSON
-# -------------------------------------------------------------------
-def load_json(path: str) -> dict:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
+# Загрузка токена
+TOKEN = os.getenv("TOKEN")
+
+# Загрузка заданий из tasks.json
+with open("tasks.json", "r", encoding="utf-8") as f:
+    daily_tasks = json.load(f)
+
+# Файл хранения данных пользователей
+USER_DATA_FILE = "user_data.json"
+
+# Загрузка пользовательских данных
+def load_user_data():
+    if not os.path.exists(USER_DATA_FILE):
         return {}
+    with open(USER_DATA_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-def save_json(path: str, data: dict):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+# Сохранение пользовательских данных
+def save_user_data(data):
+    with open(USER_DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
-# -------------------------------------------------------------------
-# Хендлеры Telegram-команд
-# -------------------------------------------------------------------
+user_data = load_user_data()
+
+# Прогресс-бар
+def get_progress_bar(day):
+    total = len(daily_tasks)
+    bar = "🟩" * day + "⬜" * (total - day)
+    return f"{bar} ({day}/{total})"
+
+# Обработка /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = str(update.effective_chat.id)
-    users = load_json(USERS_FILE)
-    if uid not in users:
-        users[uid] = {"day": 0, "goal": None, "completed_days": []}
-        save_json(USERS_FILE, users)
+    user_id = str(update.effective_user.id)
+    if user_id not in user_data:
+        user_data[user_id] = {"day": 0, "completed": [], "goal": None}
+        save_user_data(user_data)
+    keyboard = [["/next", "/progress"], ["/reset", "/goal 50000"]]
     await update.message.reply_text(
-        "Привет! Я бот «Привычка копить». Каждый день в 9:00 МСК "
-        "я пришлю тебе новое задание.\n\n"
-        "Доступные команды:\n"
-        "/next — получить текущее задание\n"
-        "/progress — узнать прогресс\n"
-        "/goal <сумма> — установить финансовую цель\n"
-        "/reset — сбросить прогресс"
+        "Добро пожаловать в челлендж «Привычка копить»!\nНажимай /next, чтобы получить первое задание.",
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
     )
 
+# Обработка /next
 async def next_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = str(update.effective_chat.id)
-    users = load_json(USERS_FILE)
-    tasks = load_json(TASKS_FILE)
-    day = users[uid]["day"]
-    if day < len(tasks):
-        text = tasks[day]
-        users[uid]["day"] += 1
-    else:
-        text = "🎉 Вы успешно прошли все 21 задание!"
-    save_json(USERS_FILE, users)
-    await update.message.reply_text(text)
+    user_id = str(update.effective_user.id)
+    data = user_data.get(user_id, {"day": 0, "completed": [], "goal": None})
+    if data["day"] >= len(daily_tasks):
+        await update.message.reply_text("🎉 Челлендж завершён! Ты прошёл все 21 день!")
+        return
+    task = daily_tasks[data["day"]]
+    await update.message.reply_text(f"{task}")
+    data["day"] += 1
+    data["completed"].append(True)
+    user_data[user_id] = data
+    save_user_data(user_data)
 
+# Обработка /progress
 async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = str(update.effective_chat.id)
-    users = load_json(USERS_FILE)
-    total = len(load_json(TASKS_FILE))
-    day = users[uid]["day"]
-    done = len(users[uid]["completed_days"])
-    bar = "🟩" * done + "⬜" * (total - done)
-    await update.message.reply_text(
-        f"Вы на дне {day} из {total}\nПрогресс:\n{bar} {done}/{total}"
-    )
+    user_id = str(update.effective_user.id)
+    data = user_data.get(user_id, {"day": 0, "completed": [], "goal": None})
+    day = data["day"]
+    bar = get_progress_bar(day)
+    await update.message.reply_text(f"📊 Прогресс:\n{bar}")
 
+# Обработка /goal
 async def set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = str(update.effective_chat.id)
-    args = context.args
-    if not args or not args[0].isdigit():
-        return await update.message.reply_text("Используйте: /goal 50000")
-    goal = int(args[0])
-    users = load_json(USERS_FILE)
-    users[uid]["goal"] = goal
-    save_json(USERS_FILE, users)
-    await update.message.reply_text(f"Цель установлена: {goal} ₽.")
+    user_id = str(update.effective_user.id)
+    try:
+        goal = int(context.args[0])
+    except (IndexError, ValueError):
+        await update.message.reply_text("❗ Используйте: /goal 50000")
+        return
+    user_data[user_id]["goal"] = goal
+    save_user_data(user_data)
+    await update.message.reply_text(f"✅ Цель установлена: {goal} руб.")
 
+# Обработка /reset
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = str(update.effective_chat.id)
-    users = load_json(USERS_FILE)
-    users[uid] = {"day": 0, "goal": None, "completed_days": []}
-    save_json(USERS_FILE, users)
-    await update.message.reply_text("Прогресс сброшен.")
+    user_id = str(update.effective_user.id)
+    user_data[user_id] = {"day": 0, "completed": [], "goal": None}
+    save_user_data(user_data)
+    await update.message.reply_text("🔄 Прогресс сброшен. Начни заново с /next")
 
-# -------------------------------------------------------------------
-# Хендлер для кнопок «✅ Сделано» / «❌ Не сделано»
-# -------------------------------------------------------------------
-async def answer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    uid = str(query.message.chat.id)
-    data = query.data  # 'done' или 'skip'
-    users = load_json(USERS_FILE)
-    day = users[uid]["day"]
-    if data == "done" and day not in users[uid]["completed_days"]:
-        users[uid]["completed_days"].append(day)
-    save_json(USERS_FILE, users)
-    result = "✅ Сделано" if data == "done" else "❌ Не сделано"
-    await query.edit_message_text(f"{query.message.text}\n\nВы ответили: {result}")
+# Вечернее напоминание (Да/Нет)
+async def evening_check(context: ContextTypes.DEFAULT_TYPE):
+    for user_id in user_data:
+        await context.bot.send_message(
+            chat_id=int(user_id),
+            text="🔔 Напоминание: ты выполнил задание дня?\nНажми /next, если ещё нет.",
+        )
 
-# -------------------------------------------------------------------
-# Авто‑задачи планировщика
-# -------------------------------------------------------------------
-async def send_daily():
-    """Утренняя рассылка нового задания в 9:00 МСК (06:00 UTC)."""
-    users = load_json(USERS_FILE)
-    tasks = load_json(TASKS_FILE)
-    global app
-    for uid, info in users.items():
-        day = info["day"]
-        if day < len(tasks):
-            try:
-                await app.bot.send_message(chat_id=int(uid), text=tasks[day])
-                users[uid]["day"] += 1
-            except Exception as e:
-                logger.error(f"Ошибка при отправке задания {uid}: {e}")
-    save_json(USERS_FILE, users)
+# Плановая отправка прогресса (на 7, 14, 21 дни)
+async def scheduled_progress(context: ContextTypes.DEFAULT_TYPE):
+    for user_id, data in user_data.items():
+        day = data.get("day", 0)
+        if day in [7, 14, 21]:
+            bar = get_progress_bar(day)
+            await context.bot.send_message(
+                chat_id=int(user_id),
+                text=f"📈 Ты уже прошёл {day} дней!\nВот твой прогресс:\n{bar}",
+            )
 
-async def send_reminder():
-    """Вечернее напоминание в 21:00 МСК (18:00 UTC)."""
-    users = load_json(USERS_FILE)
-    global app
-    for uid, info in users.items():
-        day = info["day"]
-        if day < len(load_json(TASKS_FILE)):
-            kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ Сделано", callback_data="done"),
-                InlineKeyboardButton("❌ Не сделано", callback_data="skip")
-            ]])
-            try:
-                await app.bot.send_message(
-                    chat_id=int(uid),
-                    text=f"Напоминание: вы сделали задание дня {day}?",
-                    reply_markup=kb
-                )
-            except Exception:
-                pass
-
-async def send_progress_report():
-    """Отчёт прогресса в дни 7, 14 и 21 в 09:05 МСК (06:05 UTC)."""
-    users = load_json(USERS_FILE)
-    total = len(load_json(TASKS_FILE))
-    global app
-    for uid, info in users.items():
-        day = info["day"]
-        if day in (7, 14, 21):
-            done = len(info["completed_days"])
-            bar = "🟩" * done + "⬜" * (total - done)
-            try:
-                await app.bot.send_message(
-                    chat_id=int(uid),
-                    text=f"Итоги за {day} дней:\n{bar} {done}/{total}"
-                )
-            except Exception:
-                pass
-
-# -------------------------------------------------------------------
-# Основная точка входа
-# -------------------------------------------------------------------
-if __name__ == "__main__":
-    # создаём приложение
+# Запуск
+if name == "main":
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # регистрируем команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("next", next_task))
     app.add_handler(CommandHandler("progress", progress))
     app.add_handler(CommandHandler("goal", set_goal))
     app.add_handler(CommandHandler("reset", reset))
-    app.add_handler(CallbackQueryHandler(answer_callback))
 
-    # настраиваем планировщик
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(send_daily, CronTrigger(hour=6,  minute=0))  # 09:00 МСК
-    scheduler.add_job(send_reminder, CronTrigger(hour=18, minute=0))  # 21:00 МСК
-    scheduler.add_job(send_progress_report, CronTrigger(hour=6, minute=5))  # 09:05 МСК
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(
+        lambda: app.create_task(evening_check(app.bot)),
+        CronTrigger(hour=17, minute=0),  # По UTC, 20:00 МСК
+    )
+    scheduler.add_job(
+        lambda: app.create_task(scheduled_progress(app.bot)),
+        CronTrigger(hour=6, minute=0),  # 09:00 МСК
+    )
     scheduler.start()
 
-    # запускаем бот
+    print("Бот запущен.")
     app.run_polling()
